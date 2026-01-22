@@ -1,109 +1,110 @@
-/**
- * @file       BlynkSimpleEsp8266.h
- * @author     Volodymyr Shymanskyy
- * @license    This project is released under the MIT License (MIT)
- * @copyright  Copyright (c) 2015 Volodymyr Shymanskyy
- * @date       Jan 2015
- * @brief
- *
- */
-
-#ifndef BlynkSimpleEsp8266_h
-#define BlynkSimpleEsp8266_h
-
-#ifndef ESP8266
-#error This code is intended to run on the ESP8266 platform! Please check your Tools->Board setting.
-#endif
-
-#include <version.h>
-
-#if ESP_SDK_VERSION_NUMBER < 0x020200
-#error Please update your ESP8266 Arduino Core
-#endif
-
-#include <BlynkApiArduino.h>
-#include <Blynk/BlynkProtocol.h>
-#include <Adapters/BlynkArduinoClient.h>
+#define BLYNK_TEMPLATE_ID "TMPL381gWNRi2"
+#define BLYNK_TEMPLATE_NAME "IOT BASED power monitoring and theft detection " ssAZzNJbxXiKtsM-1rIBvfQLffDEaDk7
+#define BLYNK_PRINT Serial
 #include <ESP8266WiFi.h>
+#include <BlynkSimpleEsp8266.h>
+#include <LiquidCrystal_I2C.h>
 
-class BlynkWifi
-    : public BlynkProtocol<BlynkArduinoClient>
-{
-    typedef BlynkProtocol<BlynkArduinoClient> Base;
-public:
-    BlynkWifi(BlynkArduinoClient& transp)
-        : Base(transp)
-    {}
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+BlynkTimer timer;
 
-    void connectWiFi(const char* ssid, const char* pass)
-    {
-        BLYNK_LOG2(BLYNK_F("Connecting to "), ssid);
-        WiFi.mode(WIFI_STA);
-        if (WiFi.status() != WL_CONNECTED) {
-            if (pass && strlen(pass)) {
-                WiFi.begin(ssid, pass);
-            } else {
-                WiFi.begin(ssid);
-            }
-        }
-        while (WiFi.status() != WL_CONNECTED) {
-            BlynkDelay(500);
-        }
-        BLYNK_LOG1(BLYNK_F("Connected to WiFi"));
+/* BLYNK DETAILS */
+char auth[] = "ssAZzNJbxXiKtsM-1rIBvfQLffDEaDk7";
+char ssid[] = "realme 12x 5G ";
+char pass[] = "0987654321";
 
-        IPAddress myip = WiFi.localIP();
-        (void)myip; // Eliminate warnings about unused myip
-        BLYNK_LOG_IP("IP: ", myip);
-    }
+/* PINS */
+#define PULSE_PIN D5
+#define RELAY_PIN D6
+#define BUZZER D7
 
-    void config(const char* auth,
-                const char* domain = BLYNK_DEFAULT_DOMAIN,
-                uint16_t    port   = BLYNK_DEFAULT_PORT)
-    {
-        Base::begin(auth);
-        this->conn.begin(domain, port);
-    }
+/* VARIABLES */
+volatile unsigned long pulseCount = 0;
+float energy = 0.0;
+float power = 0;
+float current = 0;
+float voltage = 230.0;
 
-    void config(const char* auth,
-                IPAddress   ip,
-                uint16_t    port = BLYNK_DEFAULT_PORT)
-    {
-        Base::begin(auth);
-        this->conn.begin(ip, port);
-    }
+/* INTERRUPT */
+ICACHE_RAM_ATTR void pulseISR() {
+  pulseCount++;
+}
 
-    void begin(const char* auth,
-               const char* ssid,
-               const char* pass,
-               const char* domain = BLYNK_DEFAULT_DOMAIN,
-               uint16_t    port   = BLYNK_DEFAULT_PORT)
-    {
-        connectWiFi(ssid, pass);
-        config(auth, domain, port);
-        while(this->connect() != true) {}
-    }
+/* READ CURRENT (AVERAGED) */
+float readCurrent() {
+  long sum = 0;
+  for(int i = 0; i < 50; i++) {
+    sum += analogRead(A0);
+    delayMicroseconds(200);
+  }
 
-    void begin(const char* auth,
-               const char* ssid,
-               const char* pass,
-               IPAddress   ip,
-               uint16_t    port   = BLYNK_DEFAULT_PORT)
-    {
-        connectWiFi(ssid, pass);
-        config(auth, ip, port);
-        while(this->connect() != true) {}
-    }
+  float adc = sum / 50.0;
+  float v = adc * (1.0 / 1023.0);   // ESP8266 ADC = 1V
+  float current = (v - 0.5) / 0.066; // Adjust offset after calibration
+  return abs(current);
+}
 
-};
+/* MAIN CALCULATION */
+void calculate() {
 
-#if !defined(NO_GLOBAL_INSTANCES) && !defined(NO_GLOBAL_BLYNK)
-  static WiFiClient _blynkWifiClient;
-  static BlynkArduinoClient _blynkTransport(_blynkWifiClient);
-  BlynkWifi Blynk(_blynkTransport);
-#else
-  extern BlynkWifi Blynk;
-#endif
+  // Safely copy pulse count
+  noInterrupts();
+  unsigned long pulses = pulseCount;
+  pulseCount = 0;
+  interrupts();
 
-#include <BlynkWidgets.h>
+  current = readCurrent();
+  power = voltage * current;
 
-#endif
+  // 1000 pulses = 1 kWh
+  energy += pulses / 1000.0;
+
+  lcd.setCursor(0,0);
+  lcd.print("P:");
+  lcd.print(power,1);
+  lcd.print("W   ");
+
+  lcd.setCursor(0,1);
+  lcd.print("E:");
+  lcd.print(energy,3);
+  lcd.print("kWh ");
+
+  Blynk.virtualWrite(V0, voltage);
+  Blynk.virtualWrite(V1, current);
+  Blynk.virtualWrite(V2, power);
+  Blynk.virtualWrite(V3, energy);
+
+  if(power > 1000) {
+    digitalWrite(BUZZER, HIGH);
+    Blynk.virtualWrite(V5, 1);
+  } else {
+    digitalWrite(BUZZER, LOW);
+    Blynk.virtualWrite(V5, 0);
+  }
+}
+
+/* RELAY CONTROL */
+BLYNK_WRITE(V4) {
+  digitalWrite(RELAY_PIN, param.asInt());
+}
+
+void setup() {
+  Serial.begin(9600);
+
+  pinMode(PULSE_PIN, INPUT_PULLUP);
+  pinMode(RELAY_PIN, OUTPUT);
+  pinMode(BUZZER, OUTPUT);
+
+  attachInterrupt(digitalPinToInterrupt(PULSE_PIN), pulseISR, FALLING);
+
+  lcd.init();
+  lcd.backlight();
+
+  Blynk.begin(auth, ssid, pass);
+  timer.setInterval(2000L, calculate);
+}
+
+void loop() {
+  Blynk.run();
+  timer.run();
+}
